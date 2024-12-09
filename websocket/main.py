@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
 from websocket_manager import ChatManager
 import asyncio
@@ -27,6 +27,38 @@ async def websocket_endpoint(websocket: WebSocket, user1: str, user2: str):
     except WebSocketDisconnect:
         # WebSocket 연결 끊김 처리
         await manager.disconnect(websocket, user1, user2)
+
+# 특정 Kafka 토픽으로 메시지 전송
+@app.post("/send/{topic}")
+async def send_message(topic: str, message: str):
+    try:
+        # Kafka로 메시지 전송
+        #message_bytes = json.dumps({"message": message}).encode("utf-8")
+        await producer.send_and_wait(topic, message)
+        return {"status": "Message sent successfully", "topic": topic, "message": message}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 특정 Kafka 토픽에서 메시지 수신
+@app.get("/receive/{topic}")
+async def receive_messages(topic: str):
+    messages = []
+    consumer = AIOKafkaConsumer(
+        topic,
+        bootstrap_servers=KAFKA_BROKER_URL,
+        group_id="api_router_group",
+        value_deserializer=lambda v: v.decode("utf-8"),
+    )
+    await consumer.start()
+    try:
+        # 메시지 5개만 가져오기
+        async for msg in consumer:
+            messages.append(msg.value)
+            if len(messages) >= 5:  # 수신 메시지 개수 제한
+                break
+        return {"status": "Messages received", "topic": topic, "messages": messages}
+    finally:
+        await consumer.stop()
 
 # Kafka Consumer 메시지 처리
 async def consume_kafka_messages():
