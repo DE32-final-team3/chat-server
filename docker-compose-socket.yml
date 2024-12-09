@@ -1,0 +1,14 @@
+services:
+  websocket:
+    build: ./websocket
+    ports:
+      - "8000:8000"
+    container_name: websocket
+    environment:
+      - KAFKA_SERVER=kafka:9092  # Kafka 서버 주소 설정
+    networks:
+      - local-net  # kafka-net 네트워크 공유
+
+networks:
+  local-net:
+    driver: bridge
