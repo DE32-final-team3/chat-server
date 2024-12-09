@@ -1,5 +1,6 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
+from websocket_manager import ChatManager
 import asyncio
 import json
 
@@ -9,23 +10,58 @@ app = FastAPI()
 KAFKA_BROKER_URL = "kafka:9092"
 KAFKA_TOPIC = "chat-1"
 
-# WebSocket 연결 관리
-class WebSocketManager:
-    def __init__(self):
-        self.active_connections = []
+manager = ChatManager()
 
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
 
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+# producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BROKER_URL)
 
-    async def send_message(self, message: str):
-        for connection in self.active_connections:
-            await connection.send_text(message)
+# manager = ChatManager()
 
-manager = WebSocketManager()
+# # Kafka Producer 및 Consumer 초기화
+# @app.on_event("startup")
+# async def startup_event():
+#     # Kafka Producer 시작
+#     await producer.start()
+#     #asyncio.create_task(consume_kafka_messages())
+
+# @app.on_event("shutdown")
+# async def shutdown_event():
+#     # Kafka Producer 종료
+#     await producer.stop()
+
+# # WebSocket 엔드포인트
+# @app.websocket("/ws/{user1}/{user2}")
+# async def websocket_endpoint(websocket: WebSocket, user1: str, user2:str):
+#     room_name = f"{min(user1, user2)}-{max(user1, user2)}"
+
+#     await manager.connect(websocket, user1, user2)
+
+#     consumer = AIOKafkaConsumer(
+#         room_name,
+#         bootstrap_server=KAFKA_BROKER_URL,
+#         group_id=f"{room_name}_group",
+#         auto_offset_reset="earliest"
+#     )
+#     await consumer.start()
+
+#     try:
+#         async def consume_messages():
+#             async for message in consumer:
+#                 await websocket.send_text(message.value.decode("utf-8"))
+
+#         consumer_task = asyncio.create_task(consume_messages())
+
+#         while True:
+#             data = await websocket.receive_text()
+
+#             await producer.send_and_wait(room_name, data.encode("utf-8"))
+
+#     except WebSocketDisconnect:
+#         await manager.disconnect(websocket, user1, user2)
+#     finally:
+#         # Kafka Consumer 정리
+#         await consumer.stop()
+#         consumer_task.cancel()
 
 # WebSocket 엔드포인트
 @app.websocket("/ws")
