@@ -1,11 +1,21 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
+from fastapi.middleware.cors import CORSMiddleware
 from websocket_manager import ChatManager
 import asyncio
 import json
 
 app = FastAPI()
 KAFKA_BROKER_URL = "kafka:9092"
+
+# CORS 설정 추가
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 모든 도메인 허용 (보안을 위해 필요한 도메인만 명시적으로 추가하세요)
+    allow_credentials=True,
+    allow_methods=["*"],  # 모든 HTTP 메서드 허용
+    allow_headers=["*"],  # 모든 헤더 허용
+)
 
 manager = ChatManager()
 
@@ -15,108 +25,60 @@ producer = AIOKafkaProducer(
     value_serializer=lambda v: json.dumps(v).encode("utf-8"),
 )
 
-# WebSocket 엔드포인트
 @app.websocket("/ws/{user1}/{user2}")
 async def websocket_endpoint(websocket: WebSocket, user1: str, user2: str):
-    # 유저 쌍에 대한 Kafka topic 설정
-    KAFKA_TOPIC = f"{min(user1, user2)}-{max(user1, user2)}"
-    print(f"topic {KAFKA_TOPIC}")
+    KAFKA_TOPIC = "-".join(sorted([user1, user2])) #f"{min(user1, user2)}-{max(user1, user2)}"
+    print(f"Connected to topic: {KAFKA_TOPIC}")
 
-    # WebSocket 연결 처리
     await manager.connect(websocket, user1, user2)
     try:
-        while True:
-            print("receive_text")
-            # WebSocket으로부터 메시지 수신
-            data = await websocket.receive_text()
-            print(f"data {data}")
+        consumer = AIOKafkaConsumer(
+            KAFKA_TOPIC,
+            bootstrap_servers=KAFKA_BROKER_URL,
+            group_id=f"{user1}_group",
+            auto_offset_reset="earliest",
+            value_deserializer=lambda x: json.loads(x.decode("utf-8")),
+        )
+        await consumer.start()
 
-            # Kafka로 메시지 전송
-            print("send_and_wait")
-            await producer.send_and_wait(KAFKA_TOPIC, data)
+        try:
+            async for msg in consumer:
+                message_data = msg.value
+                print(f"check : {message_data}")
+                await websocket.send_text(f"{message_data['sender']}: {message_data['message']}")
+        finally:
+            await consumer.stop()
+
+        while True:
+            data = await websocket.receive_text()
+            await producer.send_and_wait(
+                KAFKA_TOPIC,
+                key=f"{user1}:{KAFKA_TOPIC}".encode(),
+                value={"sender": user1, "message": data},
+            )
     except WebSocketDisconnect:
-        # WebSocket 연결 끊김 처리
         await manager.disconnect(websocket, user1, user2)
 
-# 특정 Kafka 토픽으로 메시지 전송
+
 @app.post("/send/{topic}")
-async def send_message(topic: str, message: str):
-    print("send endpoint")
+async def send_message(topic: str, sender: str, receiver: str, message: str):
+    topic = "-".join(sorted([sender, receiver])) #f"{min(sender, receiver)}-{max(sender, receiver)}"
     try:
-        # Kafka로 메시지 전송
-        #message_bytes = json.dumps({"message": message}).encode("utf-8")
-        await producer.send_and_wait(topic, json.dumps({"message": message}))
+        await producer.send_and_wait(
+            topic,
+            key=f"{sender}:{topic}".encode(),
+            value={"sender": sender, "message": message},
+        )
         return {"status": "Message sent successfully", "topic": topic, "message": message}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 특정 Kafka 토픽에서 메시지 수신
-@app.get("/receive/{topic}")
-async def receive_messages(topic: str):
-    print("receive endpoint")
-    messages = []
-    consumer = AIOKafkaConsumer(
-        topic,
-        bootstrap_servers=KAFKA_BROKER_URL,
-        group_id="websocket_group",
-        auto_offset_reset="earliest",
-        value_deserializer=lambda x: json.loads(x.decode("utf-8")),
-        #consumer_timeout_ms=10000,
-    )
-    await consumer.start()
 
-    try:
-        one = await consumer.getone()
-        msg = one.value
-        #async for msg in consumer:
-        #    print(msg.value)
-        #    messages.append(msg.value)
-            #if len(messages) >= 5:  # 수신 메시지 개수 제한
-            #    break
-        return {"status": "Messages received", "topic": topic, "messages": msg}
-    finally:
-        await consumer.stop()
-
-
-
-# Kafka Consumer 메시지 처리
-async def consume_kafka_messages():
-    consumer = AIOKafkaConsumer(
-        *manager.active_connections.keys(),  # 모든 활성 토픽 구독
-        bootstrap_servers=KAFKA_BROKER_URL,
-        group_id="websocket_group",
-        value_deserializer=lambda v: json.loads(v.decode("utf-8")),
-    )
-    await consumer.start()
-    try:
-        async for msg in consumer:
-            message = msg.value["message"]
-            # WebSocket으로 메시지 전송
-            await manager.send_message(message, *msg.topic.split('-'))
-    finally:
-        await consumer.stop()
-
-
-consumers = []
-# Kafka Producer 및 Consumer 초기화
 @app.on_event("startup")
 async def startup_event():
-    print("startup")
     await producer.start()
-    # Kafka Consumer를 비동기적으로 실행
-    for room_name in manager.active_connections.keys():
-        consumer = AIOKafkaConsumer(
-            room_name,
-            bootstrap_servers=KAFKA_BROKER_URL,
-            group_ip="websocket_group",
-            value_deserializer=lambda v:json.loads(v.decode("utf-8")),
-        )
-        await consumer.start()
-        consumers.append(consumer)
-    asyncio.create_task(consume_kafka_messages())
 
-@app.on_event("shutdown") 
+
+@app.on_event("shutdown")
 async def shutdown_event():
     await producer.stop()
-    for consumer in consumers:
-        await consumer.stop()
