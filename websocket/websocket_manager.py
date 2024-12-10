@@ -8,12 +8,10 @@ class ChatManager:
 
     async def connect(self, websocket: WebSocket, user1: str, user2: str):
         room_name = f"{min(user1, user2)}-{max(user1, user2)}"  # 유저 쌍을 기준으로 방 이름 생성
-        await websocket.accept()
-        
         if room_name not in self.active_connections:
             self.active_connections[room_name] = []
-        
         self.active_connections[room_name].append(websocket)
+        await websocket.accept()
 
     async def disconnect(self, websocket: WebSocket, user1: str, user2: str):
         room_name = f"{min(user1, user2)}-{max(user1, user2)}"
