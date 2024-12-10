@@ -66,7 +66,13 @@ async def receive_messages(topic: str):
     await consumer.start()
 
     try:
-        msg = await consumer.getone().value
+        one = await consumer.getone()
+        msg = one.value
+        #async for msg in consumer:
+        #    print(msg.value)
+        #    messages.append(msg.value)
+            #if len(messages) >= 5:  # 수신 메시지 개수 제한
+            #    break
         return {"status": "Messages received", "topic": topic, "messages": msg}
     finally:
         await consumer.stop()
