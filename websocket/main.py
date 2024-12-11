@@ -49,7 +49,12 @@ async def websocket_endpoint(websocket: WebSocket, user1: str, user2: str):
         try:
             async for msg in consumer:
                 message_data = msg.value
-                await websocket.send_text(f"{message_data['sender']}: {message_data['message']}")
+                try:
+                    await websocket.send_text(f"{message_data['sender']}: {message_data['message']}")
+                except RuntimeError:
+                    # WebSocket이 닫힌 경우 루프 종료
+                    print("WebSocket closed during sending message")
+                    break
         finally:
             await consumer.stop()
 
@@ -57,24 +62,30 @@ async def websocket_endpoint(websocket: WebSocket, user1: str, user2: str):
         """WebSocket에서 메시지를 읽어 Kafka로 전송"""
         try:
             while True:
-                data = await websocket.receive_text()
-                await producer.send_and_wait(
-                    KAFKA_TOPIC,
-                    key=f"{user1}:{KAFKA_TOPIC}".encode(),
-                    value={"sender": user1, "message": data},
-                )
-        except WebSocketDisconnect:
+                try:
+                    data = await websocket.receive_text()
+                    await producer.send_and_wait(
+                        KAFKA_TOPIC,
+                        key=f"{user1}:{KAFKA_TOPIC}".encode(),
+                        value={"sender": user1, "message": data},
+                    )
+                except WebSocketDisconnect:
+                    print("WebSocket disconnected during receiving message")
+                    break
+        finally:
             await manager.disconnect(websocket, user1, user2)
 
-    # Kafka Consumer와 WebSocket 송신 병렬 실행
-    await asyncio.gather(consume_messages(), produce_messages())
-
+    try:
+        # Kafka Consumer와 WebSocket 송신 병렬 실행
+        await asyncio.gather(consume_messages(), produce_messages())
+    finally:
+        # WebSocket 연결 종료 보장
+        await websocket.close()
 
 @app.on_event("startup")
 async def startup_event():
     """Kafka Producer 시작"""
     await producer.start()
-
 
 @app.on_event("shutdown")
 async def shutdown_event():
