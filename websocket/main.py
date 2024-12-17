@@ -8,18 +8,23 @@ from pymongo import MongoClient
 from datetime import datetime
 
 # MongoDB 설정
-client = MongoClient("mongodb://root:team3@172.17.0.1:27017/?authSource=admin")
-db = client["chat_db"]  # 데이터베이스 이름 설정
+client = MongoClient("mongodb://root:cine@3.37.94.149:27017/?authSource=admin")
+db = client["chat"]  # 데이터베이스 이름 설정
 
 # MongoDB에 메시지 저장 함수
 def save_message_to_mongo(message, topic, time):
-    room_collection = db[topic]  # 채팅방 이름에 맞는 컬렉션 사용
-    converted_time = datetime.fromtimestamp(time / 1000)
-    room_collection.insert_one({
-        "user_id": message['sender'],
-        "message": message['message'],
-        "timestamp": converted_time
-    })
+    try:
+        room_collection = db[topic]
+        converted_time = datetime.fromtimestamp(time / 1000)
+        room_collection.insert_one({
+            "user_id": message['sender'],
+            "message": message['message'],
+            "timestamp": converted_time
+        })
+        print("Message successfully saved to MongoDB.")
+    except Exception as e:
+        print(f"Error saving message to MongoDB: {e}")
+
 
 app = FastAPI()
 KAFKA_BROKER_URL = "kafka:9092"
@@ -107,9 +112,9 @@ async def websocket_endpoint(websocket: WebSocket, user1: str, user2: str):
 
 @app.on_event("startup")
 async def startup_event():
-    """Kafka Producer 시작"""
+    """Kafka Producer 시작 및 MongoDB 연결 테스트"""
     await producer.start()
-
+    
 @app.on_event("shutdown")
 async def shutdown_event():
     """Kafka Producer 종료"""
