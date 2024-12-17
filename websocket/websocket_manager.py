@@ -39,7 +39,7 @@ class ChatManager:
             # for connection in self.active_connections[room_name]:
             #     await connection.send_text(message)
 
-    async def _sefe_send(self, connection: WebSocket, message: str):
+    async def _safe_send(self, connection: WebSocket, message: str):
         try:
             await connection.send_text(message)
         except Exception as e:
