@@ -22,19 +22,10 @@ def save_message_to_mongo(message, topic, time, offset):
             "timestamp": converted_time,
             "offset": offset
         })
-        print(f"Message successfully saved to MongoDB with offset {offset}.")
+        print("Message successfully saved to MongoDB.")
     except Exception as e:
         print(f"Error saving message to MongoDB: {e}")
 
-# 이전 채팅 기록 가져오는 함수
-def get_previous_messages(topic):
-    try:
-        room_collection = db[topic]
-        messages = list(room_collection.find().sort("timestamp", 1))  # 시간 순으로 정렬
-        return messages
-    except Exception as e:
-        print(f"Error retrieving messages: {e}")
-        return []
 
 app = FastAPI()
 KAFKA_BROKER_URL = "kafka:9092"
@@ -71,11 +62,6 @@ async def websocket_endpoint(websocket: WebSocket, user1: str, user2: str):
     # WebSocket 연결 관리
     await manager.connect(websocket, room_user1, room_user2)
 
-    # 채팅 기록 불러오기 (재접속 시)
-    previous_messages = get_previous_messages(KAFKA_TOPIC)
-    for msg in previous_messages:
-        await websocket.send_text(f"{msg['user_id']}: {msg['message']}")
-
     # Kafka Consumer 설정
     consumer = AIOKafkaConsumer(
         KAFKA_TOPIC,
@@ -92,13 +78,14 @@ async def websocket_endpoint(websocket: WebSocket, user1: str, user2: str):
             async for msg in consumer:
                 message_data = msg.value
                 time_data = msg.timestamp
-                # 채팅방의 모든 WebSocket 연결에 메시지 브로드캐스트
+                offset_data = msg.offset
+
                 await manager.send_message(
                     f"{message_data['sender']}: {message_data['message']}",
                     room_user1,
                     room_user2
                 )
-                save_message_to_mongo(message_data, KAFKA_TOPIC, time_data, msg.offset)
+                save_message_to_mongo(message_data, KAFKA_TOPIC, time_data, offset_data)  # MongoDB 저장
         finally:
             await consumer.stop()
 
