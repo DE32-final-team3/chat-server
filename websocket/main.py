@@ -8,6 +8,7 @@ import json
 from pymongo import MongoClient
 from datetime import datetime
 from bson import ObjectId  
+import pymongo
 
 # MongoDB 설정
 client = MongoClient("mongodb://root:cine@3.37.94.149:27017/?authSource=admin")
@@ -179,6 +180,51 @@ def get_chat_rooms(user_id: str):
                 "partner_nickname": partner_nickname,
             })
         return {"status": "success", "data": chat_rooms}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/chat_rooms/{user_id}/recent_messages")
+def get_recent_messages(user_id: str):
+    try:
+        # MongoDB의 모든 collection 이름 가져오기
+        collections = db.list_collection_names()
+        user_related_topics = [
+            topic for topic in collections if user_id in topic
+        ]
+        chat_rooms = []
+
+        for topic in user_related_topics:
+            users = topic.split("-")
+            partner_id = users[0] if users[1] == user_id else users[1]
+
+            # 파트너 닉네임 조회
+            partner_info = client["cinetalk"]["user"].find_one({"_id": ObjectId(partner_id)})
+            partner_nickname = partner_info["nickname"] if partner_info else "Unknown"
+
+            # 최근 메시지 가져오기
+            try:
+                latest_message = client["chat"][topic].find_one(
+                    sort=[("timestamp", pymongo.DESCENDING)]
+                )
+                last_message = {
+                    "text": latest_message["message"] if latest_message else "No messages yet",
+                    "timestamp": latest_message["timestamp"] if latest_message else None
+                }
+            except Exception as e:
+                last_message = {"text": "Error retrieving message", "timestamp": None}
+                print(f"Error fetching message from {topic}: {e}")
+
+            # 채팅방 정보 저장
+            chat_rooms.append({
+                "topic": topic,
+                "partner_id": partner_id,
+                "partner_nickname": partner_nickname,
+                "last_message": last_message
+            })
+
+        return {"status": "success", "data": chat_rooms}
+
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
