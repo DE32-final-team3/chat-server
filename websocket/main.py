@@ -7,6 +7,7 @@ import asyncio
 import json
 from pymongo import MongoClient
 from datetime import datetime
+from bson import ObjectId  
 
 # MongoDB 설정
 client = MongoClient("mongodb://root:cine@3.37.94.149:27017/?authSource=admin")
@@ -14,6 +15,7 @@ db = client["chat"]  # 데이터베이스 이름 설정
 
 # Kafka 브로커 설정
 KAFKA_BROKER_URL = "kafka:9092"
+KAFKA_API_VERSION = "2.6.0"  # Kafka 브로커와 호환되는 API 버전
 
 # FastAPI 초기화
 app = FastAPI()
@@ -32,22 +34,28 @@ manager = ChatManager()
 # Kafka Producer 초기화
 producer = AIOKafkaProducer(
     bootstrap_servers=KAFKA_BROKER_URL,
+    api_version=KAFKA_API_VERSION,  # Kafka API 버전 명시
     value_serializer=lambda v: json.dumps(v).encode("utf-8"),
 )
 
 # Kafka Admin Client 생성
 async def ensure_topic_exists(topic_name: str):
-    """
-    Kafka 토픽 존재 여부 확인 및 생성
-    """
-    admin_client = AIOKafkaAdminClient(bootstrap_servers=KAFKA_BROKER_URL)
+    """Kafka 토픽 존재 여부 확인 및 생성"""
+    admin_client = AIOKafkaAdminClient(
+        bootstrap_servers=KAFKA_BROKER_URL,
+        api_version=KAFKA_API_VERSION,  # Kafka API 버전 명시
+    )
     try:
         existing_topics = await admin_client.list_topics()
         if topic_name not in existing_topics:
-            await admin_client.create_topics([NewTopic(name=topic_name, num_partitions=1, replication_factor=1)])
+            await admin_client.create_topics([
+                NewTopic(name=topic_name, num_partitions=1, replication_factor=1)
+            ])
             print(f"Kafka topic '{topic_name}' created.")
         else:
             print(f"Kafka topic '{topic_name}' already exists.")
+    except Exception as e:
+        print(f"Error ensuring Kafka topic: {e}")
     finally:
         await admin_client.close()
 
@@ -78,10 +86,7 @@ def get_previous_messages(topic):
 # WebSocket 엔드포인트
 @app.websocket("/ws/{user1}/{user2}")
 async def websocket_endpoint(websocket: WebSocket, user1: str, user2: str):
-    """
-    WebSocket을 통한 실시간 채팅 처리
-    """
-    # 사용자 ID를 정렬하여 Kafka 토픽과 그룹 ID 생성
+    """WebSocket을 통한 실시간 채팅 처리"""
     sorted_users = sorted([user1, user2])
     KAFKA_TOPIC = f"{sorted_users[0]}-{sorted_users[1]}"
     KAFKA_GROUP_ID = f"{KAFKA_TOPIC}_group"
@@ -101,6 +106,7 @@ async def websocket_endpoint(websocket: WebSocket, user1: str, user2: str):
     consumer = AIOKafkaConsumer(
         KAFKA_TOPIC,
         bootstrap_servers=KAFKA_BROKER_URL,
+        api_version=KAFKA_API_VERSION,  # Kafka API 버전 명시
         group_id=KAFKA_GROUP_ID,
         auto_offset_reset="earliest",
         value_deserializer=lambda x: json.loads(x.decode("utf-8")),
@@ -140,37 +146,42 @@ async def websocket_endpoint(websocket: WebSocket, user1: str, user2: str):
     try:
         # 메시지 소비 및 송신 병렬 처리
         await asyncio.gather(consume_messages(), produce_messages())
+    except Exception as e:
+        print(f"WebSocket handling error: {e}")
     finally:
         await websocket.close()
 
 @app.get("/api/chat_rooms/{user_id}")
 def get_chat_rooms(user_id: str):
-    """
-    현재 사용자의 ID를 기준으로 MongoDB에 저장된 모든 채팅방 정보를 반환합니다.
-    """
     try:
-        # 모든 컬렉션(토픽) 가져오기
         collections = db.list_collection_names()
-
-        # user_id가 포함된 모든 토픽 필터링
         user_related_topics = [
             topic for topic in collections if user_id in topic
         ]
-
-        # 상대방 ID 추출
         chat_rooms = []
         for topic in user_related_topics:
             users = topic.split("-")
             partner_id = users[0] if users[1] == user_id else users[1]
 
+            # MongoDB에서 닉네임 조회
+            try:
+                print(f"Attempting to fetch nickname for partner_id: {partner_id}, type: {type(partner_id)}")
+                partner_info = client["cinetalk"]["user"].find_one({"_id": ObjectId(partner_id)})
+                print(f"Fetched partner_info: {partner_info}")
+                partner_nickname = partner_info.get("nickname", "Unknown") if partner_info else "Unknown"
+            except Exception as e:
+                partner_nickname = "Unknown"
+                print(f"Error retrieving user nickname for ID {partner_id}: {e}")
+
             chat_rooms.append({
                 "topic": topic,
                 "partner_id": partner_id,
+                "partner_nickname": partner_nickname,
             })
-
         return {"status": "success", "data": chat_rooms}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
 
 # FastAPI 이벤트 처리
 @app.on_event("startup")
