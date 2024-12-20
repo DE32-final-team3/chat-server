@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body
 from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from fastapi.middleware.cors import CORSMiddleware
@@ -229,51 +229,77 @@ def get_recent_messages(user_id: str):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-@app.post("/api/chat_rooms/update_offset")
-def update_offset(user_id: str, topic: str, last_read_offset: int):
-    try:
-        # 사용자 상태를 조회
-        user_status = cinetalk["user_unread"].find_one({"user_id": user_id})
+# @app.get("/api/chat_rooms/{user_id}/unread")
+# def get_recent_unread_messages(user_id: str):
+#     """
+#     각 채팅방의 unread count를 상대방 메시지 기준으로 계산
+#     """
+#     try:
+#         # MongoDB의 모든 collection 이름 가져오기
+#         collections = db.list_collection_names()
+#         user_related_topics = [
+#             topic for topic in collections if user_id in topic
+#         ]
+#         chat_rooms = []
 
-        if user_status:
-            # 이미 존재하는 경우 배열 요소를 업데이트
-            updated_result = cinetalk["user_unread"].update_one(
-                {"user_id": user_id, "chat_rooms.topic": topic},
-                {"$set": {"chat_rooms.$.last_read_offset": last_read_offset}}
-            )
+#         for topic in user_related_topics:
+#             users = topic.split("-")
+#             partner_id = users[0] if users[1] == user_id else users[1]
 
-            # 배열 요소가 없으면 추가
-            if updated_result.matched_count == 0:
-                cinetalk["user_unread"].update_one(
-                    {"user_id": user_id},
-                    {"$push": {"chat_rooms": {"topic": topic, "last_read_offset": last_read_offset}}}
-                )
-        else:
-            # 사용자 상태가 없으면 새로 생성
-            cinetalk["user_unread"].insert_one({
-                "user_id": user_id,
-                "chat_rooms": [{"topic": topic, "last_read_offset": last_read_offset}]
-            })
+#             # 파트너 닉네임 조회
+#             partner_info = client["cinetalk"]["user"].find_one({"_id": ObjectId(partner_id)})
+#             partner_nickname = partner_info["nickname"] if partner_info else "Unknown"
 
-        return {"status": "success", "message": "Offset updated successfully"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+#             # 최근 메시지 가져오기 (상대방 메시지만 고려)
+#             try:
+#                 latest_message = client["chat"][topic].find_one(
+#                     {"user_id": {"$ne": user_id}},  # 내가 아닌 메시지만 고려
+#                     sort=[("offset", pymongo.DESCENDING)]
+#                 )
+#                 last_message = {
+#                     "text": latest_message["message"] if latest_message else "No messages yet",
+#                     "timestamp": latest_message["timestamp"] if latest_message else None,
+#                     "offset": latest_message["offset"] if latest_message else 0,
+#                 }
+#             except Exception as e:
+#                 last_message = {"text": "Error retrieving message", "timestamp": None, "offset": 0}
+#                 print(f"Error fetching message from {topic}: {e}")
 
-# FastAPI 이벤트 처리
-@app.on_event("startup")
-async def startup_event():
-    """Kafka Producer 시작"""
-    await producer.start()
+#             # 마지막 읽은 offset 가져오기
+#             user_status = cinetalk["user_unread"].find_one(
+#                 {"user_id": user_id, "chat_rooms.topic": topic},
+#                 {"chat_rooms.$": 1}
+#             )
+#             last_read_offset = (
+#                 user_status["chat_rooms"][0]["last_read_offset"]
+#                 if user_status and user_status["chat_rooms"]
+#                 else 0
+#             )
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Kafka Producer 종료"""
-    await producer.stop()
+#             # unread count 계산 (상대방 메시지 중에서 읽지 않은 것만)
+#             unread_count = client["chat"][topic].count_documents({
+#                 "user_id": {"$ne": user_id},
+#                 "offset": {"$gt": last_read_offset}
+#             })
+
+#             # 채팅방 정보 저장
+#             chat_rooms.append({
+#                 "topic": topic,
+#                 "partner_id": partner_id,
+#                 "partner_nickname": partner_nickname,
+#                 "last_message": last_message,
+#                 "unread_count": unread_count,
+#             })
+
+#         return {"status": "success", "data": chat_rooms}
+
+#     except Exception as e:
+#         return {"status": "error", "message": str(e)}
 
 @app.get("/api/chat_rooms/{user_id}/unread")
 def get_recent_unread_messages(user_id: str):
     """
-    각 채팅방의 최근 메시지와 읽지 않은 메시지 수를 반환하는 엔드포인트.
+    각 채팅방의 최근 메시지와 읽지 않은 메시지 수를 반환
     """
     try:
         # MongoDB의 모든 collection 이름 가져오기
@@ -291,7 +317,7 @@ def get_recent_unread_messages(user_id: str):
             partner_info = client["cinetalk"]["user"].find_one({"_id": ObjectId(partner_id)})
             partner_nickname = partner_info["nickname"] if partner_info else "Unknown"
 
-            # 최근 메시지 가져오기
+            # 최근 메시지 가져오기 (내 메시지 포함한 전체 메시지 중 가장 최신)
             try:
                 latest_message = client["chat"][topic].find_one(
                     sort=[("offset", pymongo.DESCENDING)]
@@ -316,20 +342,88 @@ def get_recent_unread_messages(user_id: str):
                 else 0
             )
 
-            # unread count 계산
-            latest_offset = last_message["offset"]
-            unread_count = max(0, latest_offset - last_read_offset)
+            # unread count 계산 (상대방 메시지 중에서 읽지 않은 것만)
+            unread_count = client["chat"][topic].count_documents({
+                "user_id": {"$ne": user_id},
+                "offset": {"$gt": last_read_offset}
+            })
 
             # 채팅방 정보 저장
             chat_rooms.append({
                 "topic": topic,
                 "partner_id": partner_id,
                 "partner_nickname": partner_nickname,
-                "last_message": last_message,
-                "unread_count": unread_count,
+                "last_message": last_message,  # 가장 최근 메시지
+                "unread_count": unread_count,  # 상대방 메시지 기준 unread count
             })
 
         return {"status": "success", "data": chat_rooms}
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/chat_rooms/update_offset")
+def update_offset(data: dict = Body(...)):
+    """
+    MongoDB에서 상대방이 보낸 메시지만 고려하여 last_read_offset 업데이트하고 unread_count 반환
+    """
+    user_id = data.get("user_id")
+    topic = data.get("topic")
+
+    try:
+        # 최신 offset 가져오기 (상대방이 보낸 메시지 중에서)
+        latest_message = client["chat"][topic].find_one(
+            {"user_id": {"$ne": user_id}},  # 내가 아닌 상대방 메시지만 고려
+            sort=[("offset", pymongo.DESCENDING)]
+        )
+        latest_offset = latest_message["offset"] if latest_message else 0
+
+        # 해당 topic이 이미 존재하는지 확인
+        user_status = cinetalk["user_unread"].find_one(
+            {"user_id": user_id, "chat_rooms.topic": topic}
+        )
+
+        if user_status:
+            # 배열의 해당 요소 업데이트
+            cinetalk["user_unread"].update_one(
+                {"user_id": user_id, "chat_rooms.topic": topic},
+                {"$set": {"chat_rooms.$.last_read_offset": latest_offset}}
+            )
+        else:
+            # 새 topic 추가
+            cinetalk["user_unread"].update_one(
+                {"user_id": user_id},
+                {
+                    "$push": {
+                        "chat_rooms": {
+                            "topic": topic,
+                            "last_read_offset": latest_offset
+                        }
+                    }
+                },
+                upsert=True
+            )
+
+        # unread count 계산
+        unread_count = client["chat"][topic].count_documents({
+            "user_id": {"$ne": user_id},
+            "offset": {"$gt": latest_offset}
+        })
+
+        return {"status": "success", "unread_count": unread_count}
+
+    except Exception as e:
+        print(f"Error updating offset: {e}")
+        return {"status": "error", "message": str(e)}
+
+# FastAPI 이벤트 처리
+@app.on_event("startup")
+async def startup_event():
+    """Kafka Producer 시작"""
+    await producer.start()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Kafka Producer 종료"""
+    await producer.stop()
