@@ -76,11 +76,21 @@ def save_message_to_mongo(message, topic, time, offset):
     except Exception as e:
         print(f"Error saving message to MongoDB: {e}")
 
-# MongoDB 채팅 기록 가져오기
 def get_previous_messages(topic):
     try:
         room_collection = db[topic]
-        return list(room_collection.find().sort("timestamp", 1))
+        messages = room_collection.find().sort("timestamp", 1)
+
+        formatted_messages = []
+        for msg in messages:
+            formatted_time = msg['timestamp'].isoformat() if 'timestamp' in msg else None
+            formatted_messages.append({
+                "sender": msg.get('user_id', 'Unknown sender'),
+                "message": msg.get('message', 'No message'),
+                "timestamp": formatted_time  # ISO 8601 형식 유지
+            })
+
+        return formatted_messages
     except Exception as e:
         print(f"Error retrieving messages: {e}")
         return []
@@ -102,7 +112,7 @@ async def websocket_endpoint(websocket: WebSocket, user1: str, user2: str):
     # 이전 메시지 전송
     previous_messages = get_previous_messages(KAFKA_TOPIC)
     for msg in previous_messages:
-        await websocket.send_text(f"{msg['user_id']}: {msg['message']}")
+        await websocket.send_text(json.dumps(msg))
 
     # Kafka Consumer 설정
     consumer = AIOKafkaConsumer(
@@ -117,15 +127,13 @@ async def websocket_endpoint(websocket: WebSocket, user1: str, user2: str):
     )
     await consumer.start()
 
-    # Kafka 메시지 소비
     async def consume_messages():
         try:
             async for msg in consumer:
                 message_data = msg.value
-                await manager.send_message(
-                    f"{message_data['sender']}: {message_data['message']}",
-                    user1, user2
-                )
+                # Kafka 메시지에 timestamp 추가
+                message_data["timestamp"] = datetime.utcfromtimestamp(msg.timestamp / 1000).isoformat()
+                await manager.send_message(json.dumps(message_data), user1, user2)
                 save_message_to_mongo(message_data, KAFKA_TOPIC, msg.timestamp, msg.offset)
         finally:
             await consumer.stop()
