@@ -111,6 +111,8 @@ async def websocket_endpoint(websocket: WebSocket, user1: str, user2: str):
         api_version=KAFKA_API_VERSION,  # Kafka API 버전 명시
         group_id=KAFKA_GROUP_ID,
         auto_offset_reset="earliest",
+        session_timeout_ms=60000,  # 세션 타임아웃을 늘려 재밸런싱 감소
+        heartbeat_interval_ms=10000,  # Heartbeat 주기를 늘림
         value_deserializer=lambda x: json.loads(x.decode("utf-8")),
     )
     await consumer.start()
