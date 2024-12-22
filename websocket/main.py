@@ -7,7 +7,7 @@ import asyncio
 import json
 from pymongo import MongoClient
 from datetime import datetime
-from bson import ObjectId  
+from bson import ObjectId
 import pymongo
 
 # MongoDB 설정
