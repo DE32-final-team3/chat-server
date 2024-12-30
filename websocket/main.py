@@ -163,6 +163,50 @@ async def websocket_endpoint(websocket: WebSocket, user1: str, user2: str):
     finally:
         await websocket.close()
 
+@app.websocket("/ws/{user1}")
+async def websocket_single_user(websocket: WebSocket, user1: str):
+    """단일 사용자 WebSocket 처리"""
+    notify_topic = f"{user1}_notify"
+
+    # Kafka 토픽 존재 확인 및 생성
+    await ensure_topic_exists(notify_topic)
+
+    # WebSocket 연결 관리
+    await manager.connect(websocket, user1)
+
+    # Kafka Consumer 설정
+    consumer = AIOKafkaConsumer(
+        notify_topic,
+        bootstrap_servers=KAFKA_BROKER_URL,
+        api_version=KAFKA_API_VERSION,  # Kafka API 버전 명시
+        group_id=f"{notify_topic}_group",
+        auto_offset_reset="earliest",
+        session_timeout_ms=60000,  # 세션 타임아웃을 늘려 재밸런싱 감소
+        heartbeat_interval_ms=10000,  # Heartbeat 주기를 늘림
+        value_deserializer=lambda x: json.loads(x.decode("utf-8")),
+    )
+    await consumer.start()
+
+    async def consume_messages():
+        try:
+            async for msg in consumer:
+                message_data = msg.value
+                # Kafka 메시지에 timestamp 추가
+                message_data["timestamp"] = datetime.utcfromtimestamp(msg.timestamp / 1000).isoformat()
+                # notify 메시지만 전달
+                await manager.send_message(json.dumps(message_data), user1)
+                save_message_to_mongo(message_data, notify_topic, msg.timestamp, msg.offset)
+        finally:
+            await consumer.stop()
+
+    try:
+        # 알림 메시지만 소비
+        await consume_messages()
+    except Exception as e:
+        print(f"WebSocket handling error: {e}")
+    finally:
+        await websocket.close()
+
 @app.get("/api/chat_rooms/{user_id}")
 def get_chat_rooms(user_id: str):
     try:
