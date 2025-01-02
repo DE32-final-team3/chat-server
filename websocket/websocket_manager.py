@@ -68,6 +68,13 @@ class ChatManager:
                     *[self._safe_send(connection, message) for connection in self.active_connections[room_name]]
                 )
             
+            # sender의 notify 토픽으로 알림 메시지 전송
+            notify_topic = f"{sender}_notify"
+            if notify_topic in self.active_connections:
+                await asyncio.gather(
+                    *[self._safe_send(connection, f"[Notify-{sender}]: {message}") for connection in self.active_connections[notify_topic]]
+                )
+
             # receiver의 notify 토픽으로 알림 메시지 전송
             notify_topic = f"{receiver}_notify"
             if notify_topic in self.active_connections:
