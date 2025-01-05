@@ -76,21 +76,11 @@ def save_message_to_mongo(message, topic, time, offset):
     except Exception as e:
         print(f"Error saving message to MongoDB: {e}")
 
+# MongoDB 채팅 기록 가져오기
 def get_previous_messages(topic):
     try:
         room_collection = db[topic]
-        messages = room_collection.find().sort("timestamp", 1)
-
-        formatted_messages = []
-        for msg in messages:
-            formatted_time = msg['timestamp'].isoformat() if 'timestamp' in msg else None
-            formatted_messages.append({
-                "sender": msg.get('user_id', 'Unknown sender'),
-                "message": msg.get('message', 'No message'),
-                "timestamp": formatted_time  # ISO 8601 형식 유지
-            })
-
-        return formatted_messages
+        return list(room_collection.find().sort("timestamp", 1))
     except Exception as e:
         print(f"Error retrieving messages: {e}")
         return []
@@ -112,7 +102,7 @@ async def websocket_endpoint(websocket: WebSocket, user1: str, user2: str):
     # 이전 메시지 전송
     previous_messages = get_previous_messages(KAFKA_TOPIC)
     for msg in previous_messages:
-        await websocket.send_text(json.dumps(msg))
+        await websocket.send_text(f"{msg['user_id']}: {msg['message']}")
 
     # Kafka Consumer 설정
     consumer = AIOKafkaConsumer(
@@ -121,19 +111,19 @@ async def websocket_endpoint(websocket: WebSocket, user1: str, user2: str):
         api_version=KAFKA_API_VERSION,  # Kafka API 버전 명시
         group_id=KAFKA_GROUP_ID,
         auto_offset_reset="earliest",
-        session_timeout_ms=60000,  # 세션 타임아웃을 늘려 재밸런싱 감소
-        heartbeat_interval_ms=10000,  # Heartbeat 주기를 늘림
         value_deserializer=lambda x: json.loads(x.decode("utf-8")),
     )
     await consumer.start()
 
+    # Kafka 메시지 소비
     async def consume_messages():
         try:
             async for msg in consumer:
                 message_data = msg.value
-                # Kafka 메시지에 timestamp 추가
-                message_data["timestamp"] = datetime.utcfromtimestamp(msg.timestamp / 1000).isoformat()
-                await manager.send_message(json.dumps(message_data), user1, user2)
+                await manager.send_message(
+                    f"{message_data['sender']}: {message_data['message']}",
+                    user1, user2
+                )
                 save_message_to_mongo(message_data, KAFKA_TOPIC, msg.timestamp, msg.offset)
         finally:
             await consumer.stop()
@@ -158,50 +148,6 @@ async def websocket_endpoint(websocket: WebSocket, user1: str, user2: str):
     try:
         # 메시지 소비 및 송신 병렬 처리
         await asyncio.gather(consume_messages(), produce_messages())
-    except Exception as e:
-        print(f"WebSocket handling error: {e}")
-    finally:
-        await websocket.close()
-
-@app.websocket("/ws/{user1}")
-async def websocket_single_user(websocket: WebSocket, user1: str):
-    """단일 사용자 WebSocket 처리"""
-    notify_topic = f"{user1}_notify"
-
-    # Kafka 토픽 존재 확인 및 생성
-    await ensure_topic_exists(notify_topic)
-
-    # WebSocket 연결 관리
-    await manager.connect(websocket, user1)
-
-    # Kafka Consumer 설정
-    consumer = AIOKafkaConsumer(
-        notify_topic,
-        bootstrap_servers=KAFKA_BROKER_URL,
-        api_version=KAFKA_API_VERSION,  # Kafka API 버전 명시
-        group_id=f"{notify_topic}_group",
-        auto_offset_reset="earliest",
-        session_timeout_ms=60000,  # 세션 타임아웃을 늘려 재밸런싱 감소
-        heartbeat_interval_ms=10000,  # Heartbeat 주기를 늘림
-        value_deserializer=lambda x: json.loads(x.decode("utf-8")),
-    )
-    await consumer.start()
-
-    async def consume_messages():
-        try:
-            async for msg in consumer:
-                message_data = msg.value
-                # Kafka 메시지에 timestamp 추가
-                message_data["timestamp"] = datetime.utcfromtimestamp(msg.timestamp / 1000).isoformat()
-                # notify 메시지만 전달
-                await manager.send_message(json.dumps(message_data), user1)
-                save_message_to_mongo(message_data, notify_topic, msg.timestamp, msg.offset)
-        finally:
-            await consumer.stop()
-
-    try:
-        # 알림 메시지만 소비
-        await consume_messages()
     except Exception as e:
         print(f"WebSocket handling error: {e}")
     finally:
